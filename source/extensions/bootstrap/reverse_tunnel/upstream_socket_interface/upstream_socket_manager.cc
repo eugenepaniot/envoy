@@ -132,8 +132,6 @@ UpstreamSocketManager::getConnectionSocket(const std::string& node_id) {
   fd_to_event_map_.erase(fd);
   fd_to_timer_map_.erase(fd);
 
-  cleanStaleNodeEntry(node_id);
-
   return socket;
 }
 
