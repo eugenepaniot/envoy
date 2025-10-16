@@ -419,8 +419,8 @@ void ReverseTunnelFilter::processAcceptedConnection(absl::string_view node_id,
   const std::chrono::seconds ping_seconds =
       std::chrono::duration_cast<std::chrono::seconds>(config_->pingInterval());
 
-  // Register the wrapped socket for reuse under the provided identifiers.
-  // Note: The socket manager is expected to be thread-safe.
+  // Register the wrapped socket for reuse - on the current thread for now.
+  // Socket affinity ensures the same thread handles requests for this node.
   if (socket_manager != nullptr) {
     ENVOY_CONN_LOG(trace, "reverse_tunnel: registering wrapped socket for reuse", connection);
     socket_manager->addConnectionSocket(std::string(node_id), std::string(cluster_id),

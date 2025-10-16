@@ -1,6 +1,8 @@
 #include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/upstream_socket_manager.h"
 
 #include <string>
+#include <sstream>
+#include <thread>
 
 #include "source/common/buffer/buffer_impl.h"
 #include "source/common/common/logger.h"
@@ -22,6 +24,33 @@ UpstreamSocketManager::UpstreamSocketManager(Event::Dispatcher& dispatcher,
       extension_(extension) {
   ENVOY_LOG(debug, "reverse_tunnel: creating socket manager with stats integration.");
   ping_timer_ = dispatcher_.createTimer([this]() { pingConnections(); });
+}
+
+// Helper function to dump internal state for debugging
+std::string UpstreamSocketManager::dumpState() const {
+  std::ostringstream oss;
+  std::hash<std::thread::id> hasher;
+  oss << "[Thread:" << hasher(std::this_thread::get_id()) << "] ";
+  
+  oss << "cluster_to_node_map={";
+  for (const auto& [cluster, nodes] : cluster_to_node_map_) {
+    oss << cluster << ":[";
+    for (size_t i = 0; i < nodes.size(); ++i) {
+      if (i > 0) oss << ",";
+      oss << nodes[i];
+    }
+    oss << "] ";
+  }
+  oss << "} node_to_cluster_map={";
+  for (const auto& [node, cluster] : node_to_cluster_map_) {
+    oss << node << "->" << cluster << " ";
+  }
+  oss << "} accepted_connections={";
+  for (const auto& [node, sockets] : accepted_reverse_connections_) {
+    oss << node << ":" << sockets.size() << " ";
+  }
+  oss << "}";
+  return oss.str();
 }
 
 void UpstreamSocketManager::addConnectionSocket(const std::string& node_id,
@@ -86,6 +115,9 @@ void UpstreamSocketManager::addConnectionSocket(const std::string& node_id,
   ENVOY_LOG(debug,
             "UpstreamSocketManager: added socket to maps. node: {} connection key: {} fd: {}.",
             node_id, connectionKey, fd);
+  
+  // DEBUG: Dump state after adding connection
+  ENVOY_LOG(debug, "UpstreamSocketManager: STATE AFTER ADD: {}", dumpState());
 }
 
 Network::ConnectionSocketPtr
@@ -93,10 +125,13 @@ UpstreamSocketManager::getConnectionSocket(const std::string& node_id) {
 
   ENVOY_LOG(debug, "UpstreamSocketManager: getConnectionSocket() called with node_id: {}.",
             node_id);
+  
+  // DEBUG: Dump state before looking up
+  ENVOY_LOG(debug, "UpstreamSocketManager: STATE BEFORE LOOKUP: {}", dumpState());
 
   if (node_to_cluster_map_.find(node_id) == node_to_cluster_map_.end()) {
-    ENVOY_LOG(error, "UpstreamSocketManager: cluster to node mapping changed for node: {}.",
-              node_id);
+    ENVOY_LOG(error, "UpstreamSocketManager: cluster to node mapping changed for node: {}. STATE: {}",
+              node_id, dumpState());
     return nullptr;
   }
 
@@ -137,11 +172,14 @@ UpstreamSocketManager::getConnectionSocket(const std::string& node_id) {
 
 std::string UpstreamSocketManager::getNodeID(const std::string& key) {
   ENVOY_LOG(trace, "UpstreamSocketManager: getNodeID() called with key: {}.", key);
+  
+  // DEBUG: Dump state when resolving key
+  ENVOY_LOG(debug, "UpstreamSocketManager: getNodeID STATE: {}", dumpState());
 
   // Check if key exists as a cluster ID by looking at cluster_to_node_map_.
   auto cluster_nodes_it = cluster_to_node_map_.find(key);
-  if (cluster_nodes_it != cluster_to_node_map_.end()) {
-    // Key is a cluster ID, find a node in this cluster with idle connections.
+  if (cluster_nodes_it != cluster_to_node_map_.end() && !cluster_nodes_it->second.empty()) {
+    // Key is a cluster ID. First, try to find a node with idle connections.
     for (const std::string& node_id : cluster_nodes_it->second) {
       auto node_sockets_it = accepted_reverse_connections_.find(node_id);
       if (node_sockets_it != accepted_reverse_connections_.end() &&
@@ -154,10 +192,14 @@ std::string UpstreamSocketManager::getNodeID(const std::string& key) {
         return node_id;
       }
     }
+    // No nodes with idle connections, but key is still a cluster ID.
+    // Return the first node from the cluster to maintain correct mapping.
+    const std::string& first_node = cluster_nodes_it->second.front();
     ENVOY_LOG(debug,
-              "UpstreamSocketManager: key '{}' is a cluster ID but no nodes have "
-              "idle connections; returning as-is.",
-              key);
+              "UpstreamSocketManager: key '{}' is a cluster ID with no idle connections; "
+              "returning first node '{}'.",
+              key, first_node);
+    return first_node;
   }
 
   // Treat it as a node ID and return it directly.

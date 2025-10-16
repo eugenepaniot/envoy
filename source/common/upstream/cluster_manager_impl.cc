@@ -2037,9 +2037,24 @@ void ClusterManagerImpl::ThreadLocalClusterManagerImpl::httpConnPoolIsIdle(
   // iterating through the container in `container->pools_->startDrain()`. See
   // comment in `ClusterManagerImpl::ThreadLocalClusterManagerImpl::drainConnPools`.
   if (!container->do_not_delete_ && container->pools_->empty()) {
-    ENVOY_LOG(trace, "Pool container empty for host {}, erasing host entry", *host);
-    host_http_conn_pool_map_.erase(
-        host); // NOTE: `container` is erased after this point in the lambda.
+    // Check if this is a reverse connection cluster
+    const auto& cluster_type = host->cluster().clusterType();
+    const bool is_reverse_connection_cluster =
+        cluster_type.has_value() &&
+        cluster_type->name() == "envoy.clusters.reverse_connection";
+    
+    if (!is_reverse_connection_cluster) {
+      ENVOY_LOG(trace, "Pool container empty for host {}, erasing host entry", *host);
+      host_http_conn_pool_map_.erase(
+          host); // NOTE: `container` is erased after this point in the lambda.
+    } else {
+      // Don't erase hosts for reverse connection clusters - they manage their own host lifecycle.
+      // Erasing hosts prematurely breaks the cluster-to-node mapping maintained by UpstreamSocketManager.
+      ENVOY_LOG(debug, 
+                "Pool container empty for reverse connection cluster host {}, preserving host entry "
+                "to maintain cluster-to-node mapping",
+                *host);
+    }
   }
 }
 

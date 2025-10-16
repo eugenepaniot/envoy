@@ -117,6 +117,12 @@ public:
    */
   std::string getNodeID(const std::string& key);
 
+  /**
+   * Dump internal state for debugging (thread-safe read-only).
+   * @return string representation of internal maps and state.
+   */
+  std::string dumpState() const;
+
 private:
   // Thread local dispatcher instance.
   Event::Dispatcher& dispatcher_;
